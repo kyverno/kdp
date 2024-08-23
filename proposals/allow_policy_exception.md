@@ -111,15 +111,17 @@ Due to the autogen machanism of kyverno, users may need to specify additional ru
 
 ## Implementation Notes
 
-We will introduce a new CRD: `PolicyException`.
+1. We will introduce a new CRD: `PolicyException`.
 
-Kyverno would check if there is a matching `PolicyException` when validate / mutate / generate / imageVerify for each rule.
+2. Kyverno would check if there is a matching `PolicyException` when validate / mutate / generate / imageVerify for each rule.
 
-If there is a matching exception, the rule status would be set as `skip` when building the rule response.
+   - If there is a matching exception, the rule status would be set as `skip` when building the rule response.
 
-If there is no matching exception, the rule response would be nil.
+   - If there is no matching exception, the rule response would be nil.
 
-If there is an error, the rule status would be set as `error` and report.
+   - If there is an error, the rule status would be set as `error` and report.
+
+3. Policy Exceptions will be applied after applying the cluster/namespaced policies to the resource in case rule response has a status of `fail` since there are some cases where applying the policy rule as an initial step is essential to do the exclusion afterwards such as `validate.podSecurity` rule.
 
 ## Alternative Solution
 
