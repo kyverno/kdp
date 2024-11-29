@@ -273,6 +273,95 @@ The goal is to design and implement a metadata informer. This informer focuses o
 | CronJob will do both: schedule the deletion and execute the deletion. | A CronJob created through the cleanup rule should be ignored by other rules(validate and mutate). For example, A validate policy should not block the creation of that CronJob. This can cause some complexities in the approach. We can label these CronJobs and ignore them while applying other policies. |
 | The CronJobs can be easily removed from the cluster after the completion by setting their ownerReference to the resource it was created to delete. |  |
 
+## Proposed Implementations
+
+Proposed Implementation is **Implementation 2 (reuse the Kubernetes CronJob resource)**. So, we will create new CRDs **CleanupPolicy** and **ClusterCleanupPolicy** for handling resource cleanup. 
+
+CleanupPolicy CRD manifests example:
+```
+apiVersion: kyverno.io/v1alpha1
+kind: CleanupPolicy
+metadata:
+  name: cleanuppolicy
+  namespace: default
+spec:
+  match:
+    any:
+    - resources:
+        kinds:
+          - Pod
+  conditions:
+    any:
+    - key: "{{ request.name }}"
+      operator: Equals
+      value: example
+  schedule: "* * * * *"
+```
+A cleanup controller will reconcile these CRDs and create CronJobs which will execute commands to delete the specified resources. For implementing the cleanup controller we have 2 options:
+
+
+### 1. Creating CronJobs per resource.
+A cleanup controller will create a CronJob for each of the matching resources. CronJob will run the kubectl command to delete these resources. CronJob will run according to the schedule specified in the cleanupPolicy. The creation and update of a new cleanup policy will trigger the reconciliation and the reconciliation logic will get all the matching resources and will create a CronJob per resource which will have info and commands to delete the matching resource.
+
+
+
+**Flow:**
+
+1. A new policy is added to the cluster. 
+2. The cleanup policy object is added to the controller queue with the help of CleanupPolicy and ClusterCleanupPolicy informers.
+3. The controller then gets the policy.
+4. Get the matching resources for that rule/policy.
+5. Create CronJob for scheduling the deletion for each resource.
+6. Kyverno’s Service account is used in CronJob.
+7. OwnerReference of the CronJob is set to the trigger resource, so when the matching resource is deleted, the CJ is also deleted.
+
+**Failure Recovery:**
+
+In case of failure in reconciliation, the controller will retry the reconciliation request for an object in the queue for specific no. of times (declared in the controller logic).
+
+**Life Cycle of the CronJob:**
+
+In this approach lifecycle of the CronJob created will be the same as the matching resource. The trigger resource will be set as the owner of the created CronJob and it will be garbage-collected by Kubernetes when the trigger is deleted.
+
+| Pros | Cons |
+| --- | --- |
+| Deletion of CJs after resource cleanup can be easily handled through OwnerReference | one CJ is created for each matching resource, this adds an additional X number of resources into the cluster (X is the number of matching resources in the Kyverno policy). |
+
+
+### 2. Creating CronJobs per rule/policy.
+A cleanup controller will be creating CronJob per rule/policy. The creation and update of a new cleanup policy will trigger the reconciliation. When reconciliation is triggered, a CronJob is created and kubectl delete commands for all the matching resources are informed to the CronJob and are executed at the same schedule (specified in the policy).
+
+
+
+**Flow:**
+
+1. A new policy is added to the cluster. 
+2. The policy object is added to the controller queue with the help of CleanupPolicy and ClusterCleanupPolicy informers.
+3. Get the matching resources for that policy. The matching resources could be of different kinds.
+4. Delete commands for all the matching resources are informed to the CronJob and are executed at the same schedule.
+5. On getting the admission request, fetch the CronJob created for the policy with the help of labels consisting of the rule and policy name.
+6. Kyverno’s Service account is used in CronJob.
+
+In this approach, CronJob is going to need to run the reconciliation logic for processing the rule:
+
+1. CronJob runs a processing logic for applying the rule to the resources and evaluates the resource against the engine to determine if the resource applies. 
+2. If the resource applies, delete the resource.
+
+This logic exists in Kyverno so that CronJobs will be created based on engine responses. Containerize this logic and build an image for it to run in the CronJob.
+
+**Failure Recovery:**
+
+In case of failure in reconciliation, the controller will retry the reconciliation request for an object in the queue for specific no. of times (declared in the controller logic).
+
+**Life Cycle of the CronJob:**
+
+In this approach, the life cycle of the CronJob will same as the CleanupPolicy or ClusterCleanupPolicy.
+
+| Pros | Cons |
+| --- | --- |
+| Creating CJs per rule/policy generates less load in the cluster than creating CJs per resource. | Need to come up with an approach for CJ deletion. Since it is not as straightforward as in the previous approach. |
+
+
 ## Link to the Implementation PR
 
 N/A
